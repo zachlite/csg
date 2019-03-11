@@ -1,17 +1,7 @@
 import * as _ from "lodash";
 import * as glMatrix from "gl-matrix";
+import { Polygon, Plane, BSPTreeNode } from "./interfaces";
 const mat2 = glMatrix.mat2;
-
-interface Vertex extends Array<number> {}
-interface Polygon extends Array<Vertex> {}
-
-interface BSPTreeNode {
-  plane: any;
-  left: "in" | "out" | BSPTreeNode;
-  right: "in" | "out" | BSPTreeNode;
-}
-
-type Plane = [Vertex, Vertex];
 
 const polygon: Polygon = [[0, 0], [1, 0], [1, 1]];
 
