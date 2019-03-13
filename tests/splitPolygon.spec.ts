@@ -1,5 +1,5 @@
-import { Polygon, Plane } from "../interfaces";
-import { splitPolygon } from "../splitPolygon";
+import { Polygon, Plane } from "../src/interfaces";
+import { splitPolygon } from "../src/splitPolygon";
 
 test("polygon that doesn't split", () => {
   const p1: Polygon = [[0, 0], [0, 5], [5, 0]];
