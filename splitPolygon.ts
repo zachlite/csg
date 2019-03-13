@@ -1,23 +1,44 @@
 import * as glMatrix from "gl-matrix";
 const mat2 = glMatrix.mat2;
+import * as _ from "lodash";
 
-import { Plane, Polygon, Vertex, Edge } from "./interfaces";
+import { Polygon, Plane, Vertex, Edge } from "./interfaces";
 
-// give me a polygon, and a plane
-// return a polygon, or undefined for each side of the plane
 export function splitPolygon(
   p: Polygon,
   plane: Plane
-): {
-  left?: Polygon;
-  right?: Polygon;
-} {
-  // if there are no vertices to the left, nothing to split
-  // if there are no vertices to the right, nothing to split
-  // if there are vertices on both sides, need to split
-  // find where partition plane intersects the other planes
+): { left: Polygon[]; right: Polygon[] } {
+  const pointsOnPlane = p.filter(point => isOnPlane(point, plane));
+  const polygonWithIntersections = _.uniqWith(
+    _.flattenDepth(
+      getEdges(p).map(edge => {
+        const isIntersectCandidate =
+          !pointsOnPlane.includes(edge[0]) && !pointsOnPlane.includes(edge[1]);
 
-  const withIndices = p.map((point, i) => {
+        if (!isIntersectCandidate) {
+          return [edge];
+        }
+
+        const x = intersection(edge, plane);
+        if (!x) return [edge];
+
+        const intersectionInLineSegment =
+          (x[0] < edge[0][0] && x[0] < edge[1][0]) ||
+          (x[0] > edge[0][0] && x[0] > edge[1][0]);
+
+        if (intersectionInLineSegment) return [edge];
+
+        const e1 = [edge[0], x];
+        const e2 = [x, edge[1]];
+        return [e1, e2];
+      }),
+      2
+    ),
+    _.isEqual
+  );
+
+  // split left and right, preserving index
+  const withIndices = polygonWithIntersections.map((point, i) => {
     return { point, i };
   });
 
@@ -25,94 +46,183 @@ export function splitPolygon(
     isLeftOfPlane(point.point, plane)
   );
 
-  if (!leftVertices.length) {
-    return { left: undefined, right: p };
-  }
-
   const rightVertices = withIndices.filter(point =>
     isRightOfPlane(point.point, plane)
   );
 
-  if (!rightVertices.length) {
-    return { left: p, right: undefined };
+  if (!leftVertices.length) {
+    return { left: [], right: [p] };
   }
 
-  // take vertices that lie on plane and assign them left or right
-  // if a vertex is adjacent to a point that is left, -> left
-  // if a vertex is adjacent to a point that is right -> right
+  if (!rightVertices.length) {
+    return { left: [p], right: [] };
+  }
 
-  const pointsOnPlane = withIndices.filter(point =>
-    isOnPlane(point.point, plane)
-  );
-
-  const hasAdjacentPoint = (vertices, point) => {
+  const hasAdjacentPoint = (
+    vertices,
+    point: { point: [number, number]; i: number },
+    totalVertices: number
+  ) => {
     return vertices.find(vPoint => {
-      return Math.abs(vPoint.i - point.i) === 1;
+      return (
+        Math.abs(vPoint.i - point.i) === 1 || point.i === totalVertices - 1
+      );
     })
       ? true
       : false;
   };
 
-  const assignLeft = pointsOnPlane.filter(point =>
-    hasAdjacentPoint(leftVertices, point)
-  );
+  const onPlane = withIndices.filter(point => isOnPlane(point.point, plane));
+  const inOriginalPolygon = (point: [number, number]) =>
+    p.find(original => _.isEqual(original, point));
 
-  const assignRight = pointsOnPlane.filter(point =>
-    hasAdjacentPoint(rightVertices, point)
-  );
-
-  /////
-
-  // edges: pairs of adjacent vertices
-  // bisect candidate: an edge that does not have a point that lies on the plane
-  // find intersections between plane and bisect candidates
-  const pointsOnPlaneNoIndex = pointsOnPlane.map(p => p.point);
-  const intersectCandidates = getEdges(p).filter(edge => {
-    // in order to be a candidate, the edge must not have a point that lies on the plane
+  const assignLeft = onPlane.filter(point => {
     return (
-      !pointsOnPlaneNoIndex.includes(edge[0]) &&
-      !pointsOnPlaneNoIndex.includes(edge[1])
+      inOriginalPolygon(point.point) &&
+      hasAdjacentPoint(leftVertices, point, p.length)
     );
   });
 
-  // find intersections between intersect candidates and plane, if any
+  const assignRight = onPlane.filter(point => {
+    return (
+      inOriginalPolygon(point.point) &&
+      hasAdjacentPoint(rightVertices, point, p.length)
+    );
+  });
 
-  const newVertices = intersectCandidates
-    .map(l => {
-      // undefined if there's no intersection
-      // undefined if the interesection is not within the line segements' x bounds
-      const x = intersection(l, plane);
-      if (!x) return undefined;
+  const newVertices = onPlane.filter(point => !inOriginalPolygon(point.point));
 
-      if (
-        (x[0] < l[0][0] && x[0] < l[1][0]) ||
-        (x[0] > l[0][0] && x[0] > l[1][0])
-      )
-        return undefined;
+  const left = _.orderBy(
+    [...leftVertices, ...assignLeft, ...newVertices],
+    "i",
+    "asc"
+  );
 
-      return x;
-    })
-    .filter(i => i);
+  const right = _.orderBy(
+    [...rightVertices, ...assignRight, ...newVertices],
+    "i",
+    "asc"
+  );
 
-  const leftPolygon = [
-    ...leftVertices.map(p => p.point),
-    ...assignLeft.map(p => p.point),
-    ...newVertices
-  ];
-  const rightPolygon = [
-    ...rightVertices.map(p => p.point),
-    ...assignRight.map(p => p.point),
-    ...newVertices
-  ];
+  const leftPlanarEdges = getEdges(left.map(p => p.point)).filter(edge => {
+    return isOnPlane(edge[0], plane) && isOnPlane(edge[1], plane);
+  });
 
+  if (planarEdgesOverlap(leftPlanarEdges)) {
+    const expected = Math.floor((onPlane.length - 1) / 2);
+    return {
+      left: collectPolygons(expected, left),
+      right: collectPolygons(1, right)
+    };
+  }
+
+  const rightPlanarEdges = getEdges(right.map(p => p.point)).filter(edge => {
+    return isOnPlane(edge[0], plane) && isOnPlane(edge[1], plane);
+  });
+
+  if (planarEdgesOverlap(rightPlanarEdges)) {
+    const expected = Math.floor((onPlane.length - 1) / 2);
+    return {
+      left: collectPolygons(1, left),
+      right: collectPolygons(expected, right)
+    };
+  }
+
+  // both have 1
   return {
-    left: leftPolygon,
-    right: rightPolygon
+    left: collectPolygons(1, left),
+    right: collectPolygons(1, right)
   };
 }
 
+// assume only the edges that are on the plane
+function planarEdgesOverlap(edges: Edge[]): boolean {
+  // the edge is overlapping if
+  // there is another edge whose max y is greater than this edge's max y and min y is less than this edge's min y
+  // or another edge whose max is is greater than this edge's max x and min x is less than this edge's min x
+
+  for (let edge of edges) {
+    const yMax = _.max([edge[0][1], edge[1][1]]);
+    const yMin = _.min([edge[0][1], edge[1][1]]);
+    const xMax = _.max([edge[0][0], edge[1][0]]);
+    const xMin = _.min([edge[0][0], edge[1][0]]);
+
+    for (let nextEdge of edges) {
+      const yMaxNext = _.max([nextEdge[0][1], nextEdge[1][1]]);
+      const yMinNext = _.min([nextEdge[0][1], nextEdge[1][1]]);
+      const xMaxNext = _.max([nextEdge[0][0], nextEdge[1][0]]);
+      const xMinNext = _.min([nextEdge[0][0], nextEdge[1][0]]);
+
+      if (yMaxNext > yMax && yMinNext < yMin) return true;
+      if (xMaxNext > xMax && xMinNext < xMin) return true;
+    }
+  }
+
+  return false;
+}
+
+function collectPolygons(
+  numExpected: number,
+  vertices: { point: [number, number]; i: number }[]
+): Polygon[] {
+  const polygons = vertices.reduce(
+    (acc, curr, i, src) => {
+      if (i === 0) {
+        return { ...acc, polygons: [[curr]] };
+      }
+
+      // does this vertex follow the previous vertex?
+      if (curr.i === src[i - 1].i + 1) {
+        let polygon = acc.polygons[acc.currPolygon];
+        polygon.push(curr);
+        return acc;
+      }
+
+      // if not, have we cycled through all there is to collect?
+      if (acc.currPolygon === numExpected - 1) {
+        acc.polygons[0].push(curr);
+        acc.currPolygon = 0;
+        return acc;
+      }
+
+      return {
+        polygons: [...acc.polygons, [curr]],
+        currPolygon: acc.currPolygon + 1
+      };
+    },
+    { currPolygon: 0, polygons: [] }
+  ).polygons;
+
+  return polygons.map(polygon => {
+    return polygon.map(p => p.point);
+  });
+}
+
+function isLeftOfPlane(point: [number, number], plane: Plane) {
+  return determinant(point, plane) < 0;
+}
+
+function isRightOfPlane(point: [number, number], plane: Plane) {
+  return determinant(point, plane) > 0;
+}
+
+function isOnPlane(point: [number, number], plane: Plane) {
+  return determinant(point, plane) === 0;
+}
+
+function determinant(point: [number, number], plane: Plane): number {
+  return mat2.determinant(
+    mat2.fromValues(
+      plane[1][0] - plane[0][0],
+      plane[1][1] - plane[0][1],
+      point[0] - plane[0][0],
+      point[1] - plane[0][1]
+    )
+  );
+}
+
 function intersection(l1: [Vertex, Vertex], l2: [Vertex, Vertex]): Vertex {
-  const pointInterceptForm = (
+  const slopeInterceptForm = (
     l: [Vertex, Vertex]
   ): { m: number; b: number } => {
     const dy = l[1][1] - l[0][1];
@@ -122,8 +232,8 @@ function intersection(l1: [Vertex, Vertex], l2: [Vertex, Vertex]): Vertex {
     return { m, b };
   };
 
-  const l1_pif = pointInterceptForm(l1);
-  const l2_pif = pointInterceptForm(l2);
+  const l1_pif = slopeInterceptForm(l1);
+  const l2_pif = slopeInterceptForm(l2);
 
   // parallel lines don't intersect
   if (l1_pif.m === l2_pif.m) return undefined;
@@ -156,40 +266,3 @@ function getEdges(p: Polygon): Edge[] {
 
   return edges as Edge[];
 }
-
-function isLeftOfPlane(point: [number, number], plane: Plane) {
-  return determinant(point, plane) < 0;
-}
-
-function isRightOfPlane(point: [number, number], plane: Plane) {
-  return determinant(point, plane) > 0;
-}
-
-function isOnPlane(point: [number, number], plane: Plane) {
-  return determinant(point, plane) === 0;
-}
-
-function determinant(point: [number, number], plane: Plane): number {
-  return mat2.determinant(
-    mat2.fromValues(
-      plane[1][0] - plane[0][0],
-      plane[1][1] - plane[0][1],
-      point[0] - plane[0][0],
-      point[1] - plane[0][1]
-    )
-  );
-}
-
-let poly: Polygon = [
-  [0, 0],
-  [5, 5],
-  [5, 3],
-  [8, 0],
-  [9, 1],
-  [9, -5],
-  [0, -5],
-  [6, -2],
-  [0, 0]
-];
-let partition: Plane = [[5, 5], [5, 3]];
-console.log(splitPolygon(poly, partition));
