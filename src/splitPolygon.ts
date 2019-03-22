@@ -3,6 +3,7 @@ const mat2 = glMatrix.mat2;
 import * as _ from "lodash";
 
 import { Polygon, Plane, Vertex, Edge } from "./interfaces";
+import { getEdges } from "./getEdges";
 
 export function splitPolygon(
   p: Polygon,
@@ -206,7 +207,7 @@ function isRightOfPlane(point: [number, number], plane: Plane) {
   return determinant(point, plane) > 0;
 }
 
-function isOnPlane(point: [number, number], plane: Plane) {
+export function isOnPlane(point: [number, number], plane: Plane) {
   return determinant(point, plane) === 0;
 }
 
@@ -254,15 +255,4 @@ function intersection(l1: [Vertex, Vertex], l2: [Vertex, Vertex]): Vertex {
     const y = l1_pif.m * x + l1_pif.b; // y = mx + b
     return [x, y];
   }
-}
-
-function getEdges(p: Polygon): Edge[] {
-  // an edge is two adjacent vertices
-  const edges = p
-    .map((point, i) => {
-      return i !== p.length - 1 ? [point, p[i + 1]] : [point, p[0]];
-    })
-    .filter(x => x);
-
-  return edges as Edge[];
 }

@@ -1,77 +1,90 @@
 import * as _ from "lodash";
-import * as glMatrix from "gl-matrix";
 import { Polygon, Plane, BSPTreeNode } from "./interfaces";
-const mat2 = glMatrix.mat2;
+import { splitPolygon, isOnPlane } from "./splitPolygon";
+import { getEdges } from "./getEdges";
 
-const polygon: Polygon = [[0, 0], [1, 0], [1, 1]];
-
-const planes: Plane[] = [
-  [polygon[0], polygon[1]],
-  [polygon[1], polygon[2]],
-  [polygon[0], polygon[2]]
-];
-
-function triangleCentroid(a: number[], b: number[], c: number[]) {
-  const x = (a[0] + b[0] + c[0]) / 3;
-  const y = (a[1] + b[1] + c[1]) / 3;
-  return [x, y];
-}
+// const polygon: Polygon = [[0, 0], [1, 0], [1, 1]];
+// const planes: Plane[] = [[[0, 0], [1, 0]], [[1, 0], [1, 1]], [[1, 1], [0, 0]]];
+const polygon: Polygon = [[0, 0], [5, 3], [5, 5], [10, 0]];
+const planes: Plane[] = [[[5, 3], [5, 5]]];
 
 function buildBSPT(p: Polygon, planes: Plane[]): BSPTreeNode {
   const plane: Plane = planes[0]; // take the first splitting plane
   const unusedPlanes = planes.filter((x, i) => i > 0);
 
-  const partition = (p: Polygon, predicate: (d: number) => boolean) => {
-    // take the center point of face as the test point
-    const faceCenter = triangleCentroid(p[0], p[1], p[2]);
+  const { left, right } = splitPolygon(p, plane);
 
-    // compute the determinant of the matrix whose columns are:
-    const determinant = mat2.determinant(
-      mat2.fromValues(
-        plane[1][0] - plane[0][0],
-        plane[1][1] - plane[0][1],
-        faceCenter[0] - plane[0][0],
-        faceCenter[1] - plane[0][1]
-      )
+  if ((right.length === 0 || left.length === 0) && unusedPlanes.length === 0) {
+    return {
+      plane,
+      left: "in",
+      right: "out"
+    };
+  }
+
+  // when I get planes for a new split shape, I filter any that are on the same plane as the current split plane.
+  const getNonPlanarEdges = (p: Polygon) =>
+    getEdges(p).filter(
+      edge => !isOnPlane(edge[0], plane) || !isOnPlane(edge[1], plane)
     );
 
-    // test against predicate
-    return predicate(determinant);
-  };
+  const leftPlanes =
+    left.length > 0 && right.length > 0
+      ? getNonPlanarEdges(left[0])
+      : unusedPlanes;
 
-  const left = partition(p, d => d > 0) ? p : null;
-  const right = partition(p, d => d < 0) ? p : null;
+  const rightPlanes =
+    left.length > 0 && right.length > 0
+      ? getNonPlanarEdges(right[0])
+      : unusedPlanes;
 
-  if ((!left && !right) || unusedPlanes.length === 0)
-    return {
-      plane,
-      left: "in",
-      right: "out"
-    };
+  const l =
+    left.length > 1
+      ? mergeSubTrees(left, plane)
+      : left.length === 1
+      ? buildBSPT(left[0], leftPlanes)
+      : "in";
 
-  if (!left && right)
-    return {
-      plane,
-      left: "in",
-      right: buildBSPT(right, unusedPlanes)
-    };
+  const r =
+    right.length > 1
+      ? mergeSubTrees(right, plane)
+      : right.length === 1
+      ? buildBSPT(right[0], rightPlanes)
+      : "out";
 
-  if (left && !right)
-    return {
-      plane,
-      left: buildBSPT(left, unusedPlanes),
-      right: "out"
-    };
-
-  // when both left and right,
-  // that means the polygon was bisected
-  // left and right buildBSPT calls need fresh plane lists for left and right
   return {
     plane,
-    left: buildBSPT(left, []),
-    right: buildBSPT(right, [])
+    left: l,
+    right: r
   };
 }
+
+const mergeSubTrees = (polygons: Polygon[], plane) => {
+  const trees = polygons.map(polygon => {
+    const planes = [];
+    return buildBSPT(polygon, planes);
+  });
+
+  const treeGroups = _.chunk(trees, 2);
+  const treeNodes = treeGroups.map(group => {
+    return {
+      plane,
+      left: group[0],
+      right: group.length === 2 ? group[1] : "out"
+    } as BSPTreeNode;
+  });
+
+  const tree = treeNodes.reduce((acc, curr) => {
+    if (!acc) return curr;
+    return {
+      plane,
+      left: acc,
+      right: curr
+    };
+  }, undefined);
+
+  return tree;
+};
 
 //
 console.log(JSON.stringify(buildBSPT(polygon, planes)));
